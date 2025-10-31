@@ -1,0 +1,21 @@
+# ninja log v6
+4	851	1761896942342261239	CMakeFiles/visualMarkerDetection.dir/main.cpp.o	163549a14c4666f9
+4	887	1761897376094682030	CMakeFiles/visualMarkerDetection.dir/MarkerDetection.cpp.o	c3bc0b556be7f0a8
+3	700	1761899840334708937	CMakeFiles/visualMarkerDetection.dir/main_test.cpp.o	24bf7da6a5b4f5a7
+1	62	1761899843444473539	build.ninja	158ff06af086395b
+913	1012	1761898590243375179	visualMarkerDetection	1159a001c4c9a992
+2	952	1761899791809559511	CMakeFiles/visualMarkerDetection.dir/includes/imageProcessor.cpp.o	d071cc9a7eaa8a14
+4	700	1761899858843840683	CMakeFiles/visualMarkerDetection.dir/includes/MarkerDetection.cpp.o	ab46bdc4e01a78a5
+700	797	1761899859539661720	visualMarkerDetection	ea29f360495944ba
+4	914	1761900030979459034	CMakeFiles/visualMarkerDetection.dir/main_test.cpp.o	24bf7da6a5b4f5a7
+914	1016	1761900031888605532	visualMarkerDetection	ea29f360495944ba
+4	867	1761900103458994016	CMakeFiles/visualMarkerDetection.dir/main_test.cpp.o	24bf7da6a5b4f5a7
+868	966	1761900104322309019	visualMarkerDetection	ea29f360495944ba
+5	834	1761900168314169406	CMakeFiles/visualMarkerDetection.dir/main_test.cpp.o	24bf7da6a5b4f5a7
+834	874	1761900169143407458	visualMarkerDetection	ea29f360495944ba
+4	824	1761900205531301252	CMakeFiles/visualMarkerDetection.dir/main_test.cpp.o	24bf7da6a5b4f5a7
+824	864	1761900206351227967	visualMarkerDetection	ea29f360495944ba
+5	762	1761900241639303824	CMakeFiles/visualMarkerDetection.dir/main_test.cpp.o	24bf7da6a5b4f5a7
+762	799	1761900242396478795	visualMarkerDetection	ea29f360495944ba
+4	749	1761900259139517646	CMakeFiles/visualMarkerDetection.dir/main_test.cpp.o	24bf7da6a5b4f5a7
+749	783	1761900259884060045	visualMarkerDetection	ea29f360495944ba
