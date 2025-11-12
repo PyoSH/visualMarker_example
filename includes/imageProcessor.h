@@ -30,18 +30,18 @@ public:
      * @param inputImage 원본 이미지
      * @return 모든 처리가 완료된 최종 이미지
      */
-    cv::Mat process(const cv::Mat& inputImage);
+    cv::Mat process(const cv::Mat& inputImage, std::vector<cv::Mat>& debugImages);
 
     /**
      * @brief 파이프라인에 등록된 모든 처리 단계를 초기화합니다.
      */
     void clearSteps();
 
-
+    std::vector<ProcessingStep> m_steps;
 
 private:
     // 처리 단계들을 순서대로 저장하는 벡터
-    std::vector<ProcessingStep> m_steps;
+    // std::vector<ProcessingStep> m_steps;
 };
 
 #endif //IMAGE_PROCESSOR_H
