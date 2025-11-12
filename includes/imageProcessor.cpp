@@ -1,4 +1,4 @@
-#include "ImageProcessor.h"
+#include "imageProcessor.h"
 
 void ImageProcessor::addStep(const ProcessingStep& step) {
     m_steps.push_back(step);

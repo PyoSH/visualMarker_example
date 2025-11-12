@@ -37,6 +37,8 @@ public:
      */
     void clearSteps();
 
+
+
 private:
     // 처리 단계들을 순서대로 저장하는 벡터
     std::vector<ProcessingStep> m_steps;

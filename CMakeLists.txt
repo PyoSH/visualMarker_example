@@ -5,8 +5,11 @@ project(visualMarkerDetection)
 set(CMAKE_CXX_STANDARD 17)
 find_package(OpenCV REQUIRED)
 
-set(OpenCV_DIR /opt/homebrew/lib/cmake/opencv4)
-include_directories(${OpenCV_INCLUDE_DIRS})
+set(OpenCV_DIR /opt/homebrew/lib/cmake/opencv4/)
+include_directories(
+        ${OpenCV_INCLUDE_DIRS}
+        ${catkin_INCLUDE_DIRS}
+        includes)
 
 #find_package(catkin REQUIRED COMPONENTS
 #        roscpp
@@ -15,11 +18,13 @@ include_directories(${OpenCV_INCLUDE_DIRS})
 #        cv_bridge
 #)
 
-add_executable(visualMarkerDetection main_test.cpp
+add_executable(visualMarkerDetection src/main_test.cpp
         includes/MarkerDetection.cpp
         includes/MarkerDetection.h
         includes/imageProcessor.cpp
-        includes/imageProcessor.h)
+        includes/imageProcessor.h
+        includes/PoseEvaluator.cpp
+        includes/PoseEvaluator.h)
 
 target_link_libraries(visualMarkerDetection ${OpenCV_LIBS})
 
