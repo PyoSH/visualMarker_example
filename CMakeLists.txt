@@ -30,20 +30,22 @@ include_directories(
         includes  # 사용자의 헤더 파일이 있는 폴더
 )
 
-# add_executable(visualMarkerDetection_test
-#         src/main_test.cpp
-#         includes/MarkerDetection.cpp
-#         includes/imageProcessor.cpp
-#         includes/PoseEvaluator.cpp
-# )
-# target_link_libraries(visualMarkerDetection_test
-#         ${OpenCV_LIBS}
-# )
+add_executable(visualMarkerDetection_test
+        src/main_test.cpp
+        includes/MarkerDetection.cpp
+        includes/imageProcessor.cpp
+        includes/PoseEvaluator.cpp
+        includes/DistortionClassifier.cpp
+)
+target_link_libraries(visualMarkerDetection_test
+        ${OpenCV_LIBS}
+)
 
 add_executable(aruco_node
        src/main_ros.cpp              # ROS 메인 코드 (이전 턴의 aruco_processor_node.cpp 등)
        includes/MarkerDetection.cpp  # 클래스 구현 파일
        includes/imageProcessor.cpp   # 클래스 구현 파일
+       includes/DistortionClassifier.cpp
        # PoseEvaluator는 ROS 노드에서 안 쓰면 빼도 됨
 )
 

@@ -3,144 +3,191 @@
 #include <cv_bridge/cv_bridge.h>
 #include <sensor_msgs/Image.h>
 #include <opencv2/opencv.hpp>
-#include <string> // std::string 사용
+#include <string>
+#include <vector>
+#include <algorithm>
+#include <termios.h>
+#include <unistd.h>
+#include <fcntl.h> 
+#include <glob.h> // 파일 목록을 가져오기 위한 헤더
 
-// --- 노이즈 추가를 위한 헬퍼 함수들 ---
+// --- 키보드 입력 감지 함수 (변경 없음) ---
+int kbhit(void) {
+  struct termios oldt, newt;
+  int ch;
+  int oldf;
+  tcgetattr(STDIN_FILENO, &oldt);
+  newt = oldt;
+  newt.c_lflag &= ~(ICANON | ECHO);
+  tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+  oldf = fcntl(STDIN_FILENO, F_GETFL, 0);
+  fcntl(STDIN_FILENO, F_SETFL, oldf | O_NONBLOCK);
+  ch = getchar();
+  tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+  fcntl(STDIN_FILENO, F_SETFL, oldf);
+  if(ch != EOF) {
+    ungetc(ch, stdin);
+    return 1;
+  }
+  return 0;
+}
 
-/**
- * @brief Salt & Pepper 노이즈 추가 (흑백 점)
- * @param img (Input/Output) cv::Mat (CV_8UC3, bgr8)
- * @param num_noise_points 노이즈 점 개수
- */
+// --- 노이즈 헬퍼 함수들 (변경 없음) ---
 void addSaltAndPepperNoise(cv::Mat& img, int num_noise_points = 10000) {
-    // 매번 다른 노이즈를 위해 tick count로 시드 초기화
     cv::RNG rng(cv::getTickCount()); 
     for (int i = 0; i < num_noise_points; ++i) {
         int r = rng.uniform(0, img.rows);
         int c = rng.uniform(0, img.cols);
-        
-        if (rng.uniform(0, 2) == 0) {
-            img.at<cv::Vec3b>(r, c) = cv::Vec3b(255, 255, 255); // Salt (흰색)
-        } else {
-            img.at<cv::Vec3b>(r, c) = cv::Vec3b(0, 0, 0); // Pepper (검은색)
-        }
+        if (rng.uniform(0, 2) == 0) img.at<cv::Vec3b>(r, c) = cv::Vec3b(255, 255, 255);
+        else img.at<cv::Vec3b>(r, c) = cv::Vec3b(0, 0, 0);
     }
 }
 
-/**
- * @brief Occlusion 노이즈 추가 (검은색 사각형)
- * @param img (Input/Output) cv::Mat (CV_8UC3, bgr8)
- */
 void addOcclusionNoise(cv::Mat& img) {
     cv::RNG rng(cv::getTickCount());
-    // 이미지 크기의 1/8 ~ 1/4 사이의 랜덤 크기
     int box_width = rng.uniform(img.cols / 8, img.cols / 4); 
     int box_height = rng.uniform(img.rows / 8, img.rows / 4);
-    // 랜덤 위치
     int x = rng.uniform(0, img.cols - box_width);
     int y = rng.uniform(0, img.rows - box_height);
-    
-    // 매 프레임 다른 위치에 검은색 사각형
     cv::rectangle(img, cv::Point(x, y), cv::Point(x + box_width, y + box_height), cv::Scalar(0, 0, 0), -1); 
 }
 
-/**
- * @brief 조도 변화 (밝기/대비 조절)
- * @param img (Input/Output) cv::Mat (CV_8UC3, bgr8)
- * @param alpha 대비 (1.0 = 유지)
- * @param beta 밝기 (0 = 유지)
- */
 void addIlluminationNoise(cv::Mat& img, double alpha, int beta) {
-    // convertTo는 원본을 덮어쓰지 않도록 새 Mat으로 결과를 받습니다.
     cv::Mat noisy_img;
     img.convertTo(noisy_img, -1, alpha, beta);
-    noisy_img.copyTo(img); // 결과를 다시 img에 복사
+    noisy_img.copyTo(img);
 }
-/*
-* @brief Gaussian Blur 노이즈 추가
- * @param img (Input/Output) cv::Mat (CV_8UC3, bgr8)
- * @param kernel_size 커널 크기 (양의 홀수여야 함)
-*/
+
 void addBlurNoise(cv::Mat& img, int kernel_size = 15) {
-    // kernel_size는 양의 홀수여야 함
     int k = (kernel_size < 1) ? 1 : (kernel_size % 2 == 0) ? kernel_size + 1 : kernel_size;
-    // cv::GaussianBlur(원본, 결과, 커널크기, 시그마)
     cv::GaussianBlur(img, img, cv::Size(k, k), 0);
 }
 
-// --- 헬퍼 함수 끝 ---
+void applyNoiseToImage(cv::Mat& img, const std::string& noise_type) {
+    if (noise_type == "saltpepper") addSaltAndPepperNoise(img, 100000); 
+    else if (noise_type == "occlusion") addOcclusionNoise(img);
+    else if (noise_type == "bright") addIlluminationNoise(img, 1.0, 100);
+    else if (noise_type == "dark") addIlluminationNoise(img, 1.0, -100);
+    else if (noise_type == "contrast") addIlluminationNoise(img, 1.5, 0);
+    else if (noise_type == "blur") addBlurNoise(img, 100); 
+}
 
+// --- 파일 목록 가져오기 헬퍼 함수 ---
+std::vector<std::string> getImageFiles(const std::string& folder_path) {
+    std::vector<std::string> files;
+    std::string pattern = folder_path + "/*.png"; // png 파일만 검색
+    
+    glob_t glob_result;
+    // glob 함수로 파일 패턴 검색
+    glob(pattern.c_str(), GLOB_TILDE, NULL, &glob_result);
+    
+    for(unsigned int i = 0; i < glob_result.gl_pathc; ++i) {
+        files.push_back(std::string(glob_result.gl_pathv[i]));
+    }
+    globfree(&glob_result);
+    
+    // 파일 이름순 정렬 (000 -> 001 -> 002 ...)
+    std::sort(files.begin(), files.end());
+    
+    return files;
+}
+
+// --- 메인 함수 ---
 
 int main(int argc, char** argv)
 {
   ros::init(argc, argv, "png_publisher");
-  ros::NodeHandle nh("~"); //  private 노드 핸들 '~' 유지
+  ros::NodeHandle nh("~");
   image_transport::ImageTransport it_(nh);
 
-  // 토픽명 /aruco_marker_noise_img
-  image_transport::Publisher pub = it_.advertise("/aruco_marker_noise_img_PSH", 1);
+  image_transport::Publisher pub = it_.advertise("/pub_filtered_imgs", 1);
 
-  // 파라미터 or 실행 시 인자로 PNG 경로 받기
-  std::string file_path = "/home/kriso/catkin_ws/src/visualMarker_example/test_imgs/aruco_image_000.png"; // 기본값
-  // ~file_path 파라미터로 위 기본값을 덮어쓸 수 있도록 수정
-  nh.param<std::string>("file_path", file_path, file_path);
-  ROS_INFO("Loading image from: %s", file_path.c_str());
+  // 폴더 경로 설정 (끝에 '/'가 없으면 추가해주는 것이 안전하지만 여기선 있다고 가정하거나 추가함)
+  std::string folder_path = "/home/kriso/catkin_ws/src/visualMarker_example/test_imgs"; 
+  nh.param<std::string>("folder_path", folder_path, folder_path);
+  
+  // 이미지 파일 리스트 로드
+  std::vector<std::string> image_files = getImageFiles(folder_path);
+  
+  if (image_files.empty()) {
+      ROS_ERROR("No .png files found in: %s", folder_path.c_str());
+      return 1;
+  }
 
-  double rate_hz = 1.0;
-  nh.param<double>("rate", rate_hz, 1.0); // Rate도 파라미터로 조절 가능
+  ROS_INFO("Found %lu images in folder.", image_files.size());
+  for(const auto& f : image_files) ROS_INFO(" - %s", f.c_str());
 
-  // 노이즈 타입 선택을 위한 파라미터
+  double rate_hz = 10.0;
+  nh.param<double>("rate", rate_hz, 10.0);
+
   std::string noise_type = "saltpepper";
   nh.param<std::string>("noise_type", noise_type, "none");
-  ROS_INFO("Selected noise type: '%s'. (Options: none, saltpepper, occlusion, bright, dark, contrast, blur)", noise_type.c_str());
+  ROS_INFO("Initial noise type: '%s'.", noise_type.c_str());
 
+  // 현재 가리키고 있는 이미지 인덱스
+  int current_img_index = 0;
+  
+  cv::Mat current_display_img;
 
-  cv::Mat img_original = cv::imread(file_path, cv::IMREAD_COLOR);
-  if (img_original.empty()) {
-    ROS_ERROR("Failed to load image: %s", file_path.c_str());
-    return 1;
+  // 첫 번째 이미지 로드 및 처리
+  cv::Mat img_temp = cv::imread(image_files[current_img_index], cv::IMREAD_COLOR);
+  if(img_temp.empty()) {
+      ROS_ERROR("Failed to load first image.");
+      return 1;
   }
+  img_temp.copyTo(current_display_img);
+  applyNoiseToImage(current_display_img, noise_type);
 
   ros::Rate rate(rate_hz);
 
+  std::cout << "\n========================================" << std::endl;
+  std::cout << " [Image Iterator Mode] " << std::endl;
+  std::cout << " Loaded " << image_files.size() << " images." << std::endl;
+  std::cout << " Press 'SPACE BAR' to load NEXT image (Cyclic)." << std::endl;
+  std::cout << " Press 'Ctrl + C' to exit." << std::endl;
+  std::cout << "========================================\n" << std::endl;
+
   while (ros::ok()) {
+    
+    if (kbhit()) {
+        int key = getchar(); 
 
-    // 원본 이미지를 매번 복사 (원본 훼손 방지)
-    cv::Mat noisy_img;
-    img_original.copyTo(noisy_img);
-
-    // 선택된 노이즈 타입 적용
-    if (noise_type == "saltpepper") {
-        addSaltAndPepperNoise(noisy_img, 100000); // 10000개의 점
-    } 
-    else if (noise_type == "occlusion") {
-        addOcclusionNoise(noisy_img); // 랜덤 위치에 검은 사각형
+        if (key == ' ') {
+            // --- 스페이스바: 다음 이미지 로드 ---
+            
+            // 인덱스 증가 (마지막이면 0으로 순환)
+            current_img_index = (current_img_index + 1) % image_files.size();
+            
+            // 이미지 파일 로드
+            std::string next_file = image_files[current_img_index];
+            cv::Mat new_original = cv::imread(next_file, cv::IMREAD_COLOR);
+            
+            if (!new_original.empty()) {
+                // 로드 성공 시 노이즈 적용 후 디스플레이 이미지 업데이트
+                new_original.copyTo(current_display_img);
+                applyNoiseToImage(current_display_img, noise_type);
+                // applyNoiseToImage(current_display_img, "blur");
+                
+                ROS_INFO(" [Update] Image changed to: %s", next_file.c_str());
+            } else {
+                ROS_WARN(" [Error] Could not read: %s", next_file.c_str());
+            }
+        }
+        else if (key == 3) { // Ctrl+C
+            break;
+        }
     }
-    else if (noise_type == "bright") { // 밝게
-        addIlluminationNoise(noisy_img, 1.0, 100); // alpha=1.0 (대비 유지), beta=80 (밝게)
+
+    // 현재 이미지를 지속적으로 발행
+    if(!current_display_img.empty()){
+        sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", current_display_img).toImageMsg();
+        msg->header.stamp = ros::Time::now();
+        msg->header.frame_id = "camera";
+        pub.publish(msg);
     }
-    else if (noise_type == "dark") { // 어둡게
-        addIlluminationNoise(noisy_img, 1.0, -100); // alpha=1.0 (대비 유지), beta=-80 (어둡게)
-    }
-    else if (noise_type == "contrast") { // 대비 강하게
-        addIlluminationNoise(noisy_img, 1.5, 0); // alpha=1.5 (대비 증가), beta=0 (밝기 유지)
-    }
-    else if (noise_type == "blur") { //블러링
-        addBlurNoise(noisy_img, 200); 
-    }// 15x15 커널 크기
-    // "none" 이거나 일치하는게 없으면 noisy_img (원본 복사본)이 그대로 사용됨
 
-
-    //노이즈가 적용된 noisy_img로 sensor_msgs::Image 변환
-    sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", noisy_img).toImageMsg();
-    msg->header.stamp = ros::Time::now();
-    msg->header.frame_id = "camera";
-
-    pub.publish(msg);
-
-    ROS_INFO_THROTTLE(2.0, "Publishing /aruco_marker_noise_img (Noise: %s)", noise_type.c_str());
     ros::spinOnce();
-    rate.sleep();
+    rate.sleep(); 
   }
 
   return 0;

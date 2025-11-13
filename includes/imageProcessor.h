@@ -4,6 +4,7 @@
 #include <opencv2/opencv.hpp>
 #include <vector>
 #include <functional> // std::function을 사용하기 위해 필수
+#include "DistortionClassifier.h"
 
 /**
  * @typedef ProcessingStep
@@ -37,7 +38,12 @@ public:
      */
     void clearSteps();
 
+    void configureForType(DistortionType type);
+
+    cv::Point2f getIntersection(cv::Point A, cv::Point B, cv::Point C, cv::Point D);
+
     std::vector<ProcessingStep> m_steps;
+
 
 private:
     // 처리 단계들을 순서대로 저장하는 벡터

@@ -3,6 +3,7 @@
 #include <cv_bridge/cv_bridge.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/CameraInfo.h>
+#include <std_msgs/Float64MultiArray.h> // [필수] 결과 전송용
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <memory> // for std::shared_ptr
@@ -10,6 +11,17 @@
 // 기존에 작성한 헤더 파일 포함
 #include "../includes/MarkerDetection.h"
 #include "../includes/imageProcessor.h"
+#include "../includes/DistortionClassifier.h"
+
+std::string getDistortionName(DistortionType type) {
+    switch (type) {
+        case DistortionType::CLEAN:       return "CLEAN";
+        case DistortionType::BLUR:        return "BLUR";
+        case DistortionType::SALT_PEPPER: return "SALT_PEPPER";
+        case DistortionType::OCCLUSION:   return "OCCLUSION";
+        default:                          return "UNKNOWN";
+    }
+}
 
 class ArucoProcessorNode {
 public:
@@ -25,16 +37,19 @@ public:
         cam_info_sub_ = nh_.subscribe("camera_info", 1, &ArucoProcessorNode::cameraInfoCallback, this);
 
         // 이미지 구독
-        image_sub_ = it_.subscribe("/aruco_marker_noise_img_PSH", 1, &ArucoProcessorNode::imageCallback, this);
+        image_sub_ = it_.subscribe("/pub_filtered_imgs", 1, &ArucoProcessorNode::imageCallback, this);
+
+        // Pub: Master PC로 보내는 결과 (Float64MultiArray)
+        pose_pub_ = nh_.advertise<std_msgs::Float64MultiArray>("/return_pose_info", 1);
 
         ROS_INFO("Waiting for camera info...");
 
-        cv::Mat cameraMatrix = (cv::Mat_<double>(3, 3) <<
-            1803.10147,     0.0,        980.60876,  // fx, 0, cx
-            0.0,            1802.02133, 650.23663,  // 0, fy, cy
-            0.0,            0.0,        1.0);
+        cameraMatrix = (cv::Mat_<double>(3, 3) <<
+            1975.8198,     0.0,        958.0988,  // fx, 0, cx
+            0.0,           1976.17418, 587.56144,  // 0, fy, cy
+            0.0,           0.0,        1.0);
         
-        cv::Mat distCoeffs = (cv::Mat_<double>(1, 5) << -0.388341, 0.183527, -0.000277, 0.001198, 0.0); // k1, k2, p1, p2, k3
+        distCoeffs = (cv::Mat_<double>(1, 5) << -0.382539, 0.188592, 0.001473, -0.000317, 0.0); // k1, k2, p1, p2, k3
 
         detector_ = std::make_shared<MarkerDetection>(
             cameraMatrix, distCoeffs, marker_length_, dictionary_id_
@@ -42,71 +57,6 @@ public:
     }
 
 private:
-    // --- [핵심 1] ImageProcessor 파이프라인 구성 ---
-    void setupImageProcessor(bool flag_lighting, bool flag_Blur, bool flag_something) {
-        // Step 1: Grayscale
-        processor_.addStep([](const cv::Mat& img) -> cv::Mat {
-            cv::Mat gray;
-            if (img.channels() == 3) cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
-            else gray = img.clone();
-            
-            return gray;
-        });
-
-        if (flag_lighting){
-            // Step 2: CLAHE (조명 보정)
-            processor_.addStep([](const cv::Mat& img) -> cv::Mat {
-                cv::Mat enhanced;
-                auto clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
-                clahe->apply(img, enhanced);
-                return enhanced;
-            });
-
-            // Step 3: Gaussian Blur (노이즈 제거)
-            processor_.addStep([](const cv::Mat& img) -> cv::Mat {
-                cv::Mat blurred;
-                cv::GaussianBlur(img, blurred, cv::Size(5, 5), 0);
-                return blurred;
-            });
-        }
-        
-        if (flag_Blur){
-            // [블러 제거] 언샤프 마스킹 (Unsharp Masking)
-            processor_.addStep([](const cv::Mat& img) -> cv::Mat {
-                cv::Mat blurred, sharpened;
-                
-                // 1. 이미지의 저주파 성분(뭉개진 부분)을 추출
-                // sigma 값을 조절하여 샤프닝의 '범위'를 결정 (값이 클수록 굵은 선이 강조됨)
-                cv::GaussianBlur(img, blurred, cv::Size(0, 0), 3.0);
-                
-                // 2. 원본과 블러된 이미지의 차이를 이용해 엣지 강조
-                // addWeighted(src1, alpha, src2, beta, gamma, dst)
-                // 식: Result = img * 1.5 + blurred * (-0.5)
-                // 즉, 원본을 1.5배 강조하고, 뭉개진 부분을 0.5배 뺍니다.
-                cv::addWeighted(img, 2.5, blurred, -1.5, 0, sharpened);
-                
-                return sharpened;
-            });
-
-            processor_.addStep([](const cv::Mat& img) -> cv::Mat {
-                cv::Mat binary;
-                // THRESH_BINARY | THRESH_OTSU 사용
-                // 임계값(0)은 무시되고, Otsu 알고리즘이 최적의 값을 자동으로 계산합니다.
-                // 결과: 배경은 255(흰색), 마커는 0(검은색)으로 '덩어리'째 분리됨
-                cv::threshold(img, binary, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
-                
-                // 만약 조명 때문에 노이즈가 좀 있다면, 모폴로지 열기(Opening)로 점들을 제거
-                // cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
-                // cv::morphologyEx(binary, binary, cv::MORPH_OPEN, kernel);
-                
-                return binary;
-            });
-        }
-        
-        std::cout <<"ImageProcessor pipeline: " << processor_.m_steps.size() << std::endl;
-    }
-
-    // --- [핵심 2] CameraInfo 콜백 함수 ---
     void cameraInfoCallback(const sensor_msgs::CameraInfoConstPtr& msg)
     {
         if (got_camera_info_) return; // 이미 초기화되었으면 패스
@@ -114,18 +64,11 @@ private:
         ROS_INFO("Received Camera Info!");
 
         // ROS 메시지 -> OpenCV Mat 변환
-        // cv::Mat cameraMatrix = (cv::Mat_<double>(3, 3) <<
-        //     msg->K[0], msg->K[1], msg->K[2],
-        //     msg->K[3], msg->K[4], msg->K[5],
-        //     msg->K[6], msg->K[7], msg->K[8]);
-        // cv::Mat distCoeffs = cv::Mat(msg->D, true);
-
-        cv::Mat cameraMatrix = (cv::Mat_<double>(3, 3) <<
-            1803.10147,     0.0,        980.60876,  // fx, 0, cx
-            0.0,            1802.02133, 650.23663,  // 0, fy, cy
-            0.0,            0.0,        1.0);
-        
-        cv::Mat distCoeffs = (cv::Mat_<double>(1, 5) << -0.388341, 0.183527, -0.000277, 0.001198, 0.0); // k1, k2, p1, p2, k3
+        cameraMatrix = (cv::Mat_<double>(3, 3) <<
+            msg->K[0], msg->K[1], msg->K[2],
+            msg->K[3], msg->K[4], msg->K[5],
+            msg->K[6], msg->K[7], msg->K[8]);
+        distCoeffs = cv::Mat(msg->D, true);
 
         // MarkerDetection 객체 생성 (이제 카메라 정보를 알았으므로 생성 가능)
         detector_ = std::make_shared<MarkerDetection>(
@@ -135,10 +78,9 @@ private:
         got_camera_info_ = true;
 
         // (선택 사항) 더 이상 카메라 정보가 필요 없으면 구독 취소
-        // cam_info_sub_.shutdown();
+        cam_info_sub_.shutdown();
     }
 
-    // --- [핵심 3] Image 콜백 함수 ---
     void imageCallback(const sensor_msgs::ImageConstPtr& msg) {
         if (!got_camera_info_ || !detector_) {
             ROS_WARN_THROTTLE(2.0, "Waiting for camera intrinsics...");
@@ -153,55 +95,120 @@ private:
             ROS_ERROR("cv_bridge exception: %s", e.what());
             return;
         }
-
-        // 2. 영상 전처리 (ImageProcessor 사용)
-        // raw_img는 보존하고, 검출용 이미지를 생성
-
-        // 2.1 ImageProcessor 파이프라인 설정 (생성 시 1회 설정)
-        setupImageProcessor(false, false, false);
         std::vector<cv::Mat> debug_imgs;
-        cv::Mat processed_img = processor_.process(raw_img, debug_imgs);
 
-        publishDebugImages(debug_imgs, msg->header);
+        std::cout << "[1단계] 입력된 이미지에서 마커 검출하기" << std::endl;
 
-        // 3. 마커 검출 및 Pose 추정
         ArucoResult results;
-        bool found = detector_->estimatePose(processed_img, results);
+        bool found = detector_->estimatePose(raw_img, results);
+        bool success = false;
 
         // 4. 결과 출력 및 시각화
+        float error_thres = 3.0;
+
         if (found) {
             ROS_INFO_THROTTLE(1.0, "Found %lu markers", results.ids.size());
+            double error = getReprojectionError(results.corners[0], results.rvecs[0], results.tvecs[0], cameraMatrix, distCoeffs, marker_length_);
 
+            if (error < error_thres){
+                success = true;
+                std::cout << "[1단계 성공] 원본 검출 완료 (Error: " << error << ")" << std::endl;
+            }else{
+                std::cout << "[1단계 불안정] 신뢰도 낮음 (Error: " << error << "). 재검출 필요." << std::endl;
+            }
+        }
+        cv::Mat processed_img = raw_img.clone();
+
+        if (!success){
+            std::cout << "[2단계] 마커 검출 실패, 원인 분류" << std::endl;
+
+            DistortionType type = classifier.classify(raw_img);
+            std::cout << " -> 감지된 원인: " << getDistortionName(type) << std::endl;
+
+            processor_.configureForType(type);
+            processed_img = processor_.process(raw_img,debug_imgs);
+
+            bool found_2nd = detector_->estimatePose(processed_img, results);
+
+            if (found_2nd){
+                success = true;
+                std::cout << "[3단계 성공] 전처리 후 검출 완료!" << std::endl;
+            }else{
+                std::cout << "[Fail] 전처리 후에도 마커 검출 실패." << std::endl;
+            }
+        }
+
+        if (!raw_img.empty() && !processed_img.empty()) {
+    
+            cv::Mat left_img = raw_img.clone();       // 원본 (왼쪽)
+            cv::Mat right_img;                        // 처리된 이미지 (오른쪽)
+
+            // 1. 채널 맞추기 (흑백 -> 컬러 포맷으로 변환)
+            // hconcat은 채널 수가 다르면 에러가 납니다.
+            if (processed_img.channels() == 1) {
+                cv::cvtColor(processed_img, right_img, cv::COLOR_GRAY2BGR);
+            } else {
+                right_img = processed_img.clone();
+            }
+
+            // (선택) 만약 결과(Draw된 것)를 오른쪽에 보고 싶다면 아래 줄 주석 해제
+            // right_img = debug_imgs.back(); // drawResults가 적용된 마지막 이미지
+
+            // 2. 텍스트 추가 (구분을 위해)
+            cv::putText(left_img, "Raw Input", cv::Point(30, 30), 
+                        cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 255, 0), 2);
+            cv::putText(right_img, "Processed", cv::Point(30, 30), 
+                        cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 0, 255), 2);
+
+            // 3. 두 이미지 가로로 합치기 (Horizontal Concatenate)
+            cv::Mat comparison;
+            cv::hconcat(left_img, right_img, comparison);
+
+            // 4. 윈도우 띄우기 (Slave PC 요구사항)
+            // 창 크기가 너무 크면 줄여서 보여주기 (선택 사항)
+            cv::resize(comparison, comparison, cv::Size(), 0.5, 0.5); 
+            
+            cv::imshow("Monitor: Raw vs Processed", comparison);
+            cv::waitKey(1); // ROS에서는 spin()이 돌지만 imshow 갱신을 위해 필수
+        }
+        
+        if (success){
             for (size_t i = 0; i < results.ids.size(); ++i) {
                 int id = results.ids[i];
                 cv::Vec3d tvec = results.tvecs[i]; // Position
                 cv::Vec3d rvec = results.rvecs[i]; // Orientation (Rodrigues)
 
+                cv::Vec3d euler = getEulerAngles(rvec); // 오일러 각
+
                 // 콘솔 출력 (Position & Orientation)
                 printf("[ID: %d] Pos(x,y,z): %.3f, %.3f, %.3f | Rot(rx,ry,rz): %.3f, %.3f, %.3f\n",
-                       id,
-                       tvec[0], tvec[1], tvec[2],
-                       rvec[0], rvec[1], rvec[2]);
+                    id,
+                    tvec[0], tvec[1], tvec[2],
+                    euler[0], euler[1], euler[2]);
+                
+                /*
+                // [추가] ROS 메시지 발행 (Master PC 요구사항)
+                // 토픽명: /return_pose_info, 타입: Float64MultiArray
+                // 데이터 순서: x, y, z, roll, pitch, yaw
+                */
+                std_msgs::Float64MultiArray pose_msg;
+                pose_msg.data.resize(6);
+                pose_msg.data[0] = tvec[0];
+                pose_msg.data[1] = tvec[1];
+                pose_msg.data[2] = tvec[2];
+                pose_msg.data[3] = euler[0]; // Roll
+                pose_msg.data[4] = euler[1]; // Pitch
+                pose_msg.data[5] = euler[2]; // Yaw
+                pose_pub_.publish(pose_msg);
             }
 
             // (선택) 시각화: 원본 이미지에 그리기
             detector_->drawResults(raw_img, results);
-            cv::Mat img_small;
-            cv::resize(raw_img, img_small, cv::Size(640, 480));
-            cv::imshow("Result", img_small);
-
-            // (선택) 전처리 과정 확인
-            // cv::imshow("Processed Input", processed_img);
-            cv::waitKey(1);
-
+            debug_imgs.push_back(raw_img.clone());
         }else{
-            std::cout <<"No marker found!" << std::endl;
-            /*
-            여기에 왜 검출 안됐는지 분석하는 코드 넣고, 다시 검출하도록 하기.
-            */
+            std::cout << " ?? IDK ?? " << std::endl;
         }
-        processor_.clearSteps(); // 반복될 때마다 스텝이 누적되지 않도록.
-
+        publishDebugImages(debug_imgs, msg->header);
     }
 
     // --- [핵심 기능] 디버그 이미지 발행 함수 ---
@@ -230,18 +237,80 @@ private:
         }
     }
 
+    double getReprojectionError(const std::vector<cv::Point2f>& detectedCorners,
+                                const cv::Vec3d& rvec,
+                                const cv::Vec3d& tvec,
+                                const cv::Mat& cameraMatrix,
+                                const cv::Mat& distCoeffs,
+                                float markerLength) 
+    {        
+        // 1. 마커의 3D 좌표계 정의 (중심이 0,0,0인 평면 사각형)
+        std::vector<cv::Point3f> objectPoints;
+        float halfSize = markerLength / 2.0f;
+        // 순서: Top-Left, Top-Right, Bottom-Right, Bottom-Left (OpenCV ArUco 표준)
+        objectPoints.push_back(cv::Point3f(-halfSize, halfSize, 0));
+        objectPoints.push_back(cv::Point3f(halfSize, halfSize, 0));
+        objectPoints.push_back(cv::Point3f(halfSize, -halfSize, 0));
+        objectPoints.push_back(cv::Point3f(-halfSize, -halfSize, 0));
+
+        // 2. 3D 점을 현재 Pose(rvec, tvec)를 이용해 2D 화면으로 투영
+        std::vector<cv::Point2f> projectedPoints;
+        cv::projectPoints(objectPoints, rvec, tvec, cameraMatrix, distCoeffs, projectedPoints);
+
+        // 3. 검출된 좌표와 투영된 좌표 사이의 거리(오차) 계산
+        double totalError = 0.0;
+        for (size_t i = 0; i < detectedCorners.size(); ++i) {
+            // 유클리드 거리 제곱 합
+            double error = cv::norm(detectedCorners[i] - projectedPoints[i]); 
+            totalError += error * error;
+        }
+
+        // RMS (Root Mean Square) 에러 반환
+        return std::sqrt(totalError / detectedCorners.size());
+    }
+
+    cv::Vec3d getEulerAngles(cv::Vec3d rvec) {
+        cv::Mat R;
+        cv::Rodrigues(rvec, R); // 회전 벡터 -> 회전 행렬 변환
+
+        // 회전 행렬에서 오일러 각 추출 (일반적인 Z-Y-X 순서)
+        double sy = std::sqrt(R.at<double>(0,0) * R.at<double>(0,0) +
+                              R.at<double>(1,0) * R.at<double>(1,0));
+
+        bool singular = sy < 1e-6; // 짐벌락 체크
+
+        double x, y, z;
+        if (!singular) {
+            x = atan2(R.at<double>(2,1), R.at<double>(2,2));
+            y = atan2(-R.at<double>(2,0), sy);
+            z = atan2(R.at<double>(1,0), R.at<double>(0,0));
+        } else {
+            x = atan2(-R.at<double>(1,2), R.at<double>(1,1));
+            y = atan2(-R.at<double>(2,0), sy);
+            z = 0;
+        }
+
+        // Radian -> Degree 변환하여 반환
+        return cv::Vec3d(x, y, z) * (180.0 / CV_PI);
+    }
+
     // ROS 핸들러
     ros::NodeHandle nh_;
     image_transport::ImageTransport it_;
     ros::Subscriber cam_info_sub_;
     image_transport::Subscriber image_sub_;
+    ros::Publisher pose_pub_;
 
     // [추가] 디버그용 Publisher 리스트
     std::vector<image_transport::Publisher> debug_pubs_;
 
+    cv::Mat distCoeffs;
+    cv::Mat cameraMatrix;
+
     // 커스텀 클래스 객체
     std::shared_ptr<MarkerDetection> detector_; // 나중에 초기화하므로 포인터 사용
     ImageProcessor processor_;
+    DistortionClassifier classifier;
 
     // 상태 변수 및 파라미터
     bool got_camera_info_;
